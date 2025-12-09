@@ -12,6 +12,8 @@ import {
 } from '@/lib/canvas/canvasRenderer';
 import { PreviewWaveEngine } from '@/lib/canvas/PreviewWaveEngine';
 import type { Layer, Selection, ToolType, WorldPoint } from '@/lib/canvas/types';
+import { WandSettings, DEFAULT_WAND_SETTINGS, type WandSettingsState } from './WandSettings';
+import { AnimatePresence } from 'framer-motion';
 
 interface EditorCanvasProps {
   layers: Layer[];
@@ -20,6 +22,7 @@ interface EditorCanvasProps {
   tolerance: number;
   zoom: number;
   onZoomChange: (zoom: number) => void;
+  onToleranceChange: (tolerance: number) => void;
   onSelectionChange: (selection: Selection | null) => void;
 }
 
@@ -30,6 +33,7 @@ export function EditorCanvas({
   tolerance,
   zoom,
   onZoomChange,
+  onToleranceChange,
   onSelectionChange,
 }: EditorCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,10 +44,13 @@ export function EditorCanvas({
 
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [isRightMouseDown, setIsRightMouseDown] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [previewMask, setPreviewMask] = useState<Uint8ClampedArray | null>(null);
   const [hoverPoint, setHoverPoint] = useState<WorldPoint | null>(null);
+  const [wandSettings, setWandSettings] = useState<WandSettingsState>(DEFAULT_WAND_SETTINGS);
 
+  const lastHoverUpdateRef = useRef<number>(0);
   const animationFrameRef = useRef<number | null>(null);
   const marchingAntsOffsetRef = useRef(0);
 
@@ -62,6 +69,11 @@ export function EditorCanvas({
       devicePixelRatio: window.devicePixelRatio,
     });
   }, [zoom, panOffset]);
+
+  // Update preview engine time budget when settings change
+  useEffect(() => {
+    // The time budget is passed to startWave, so we just need to trigger new previews
+  }, [wandSettings.timeBudgetMs]);
 
   // Main render loop
   useEffect(() => {
@@ -131,8 +143,10 @@ export function EditorCanvas({
       coordSystemRef.current.applyToContext(ctx);
 
       // Draw magic wand preview
-      if (previewMask && hoverPoint && activeTool === 'magic-wand') {
+      if (previewMask && hoverPoint && activeTool === 'magic-wand' && wandSettings.hoverEnabled) {
+        ctx.globalAlpha = wandSettings.previewOpacity;
         drawPreviewMask(ctx, previewMask);
+        ctx.globalAlpha = 1;
         drawSeedHighlight(ctx, hoverPoint);
       }
 
@@ -144,7 +158,7 @@ export function EditorCanvas({
     const frameId = requestAnimationFrame(render);
 
     return () => cancelAnimationFrame(frameId);
-  }, [previewMask, hoverPoint, activeTool]);
+  }, [previewMask, hoverPoint, activeTool, wandSettings.hoverEnabled, wandSettings.previewOpacity]);
 
   // Handle resize
   useEffect(() => {
@@ -163,6 +177,41 @@ export function EditorCanvas({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Start preview with current settings
+  const startPreview = useCallback(
+    (worldPoint: WorldPoint) => {
+      if (!wandSettings.hoverEnabled || layers.length === 0) return;
+
+      // Check refresh rate throttle
+      const now = performance.now();
+      if (now - lastHoverUpdateRef.current < wandSettings.hoverRefreshRate) {
+        return;
+      }
+      lastHoverUpdateRef.current = now;
+
+      const composite = createComposite(layers);
+      
+      // For instant mode, use a very large time budget
+      const timeBudget = wandSettings.fillSpeed === 'instant' 
+        ? 10000 // 10 seconds - effectively instant
+        : wandSettings.timeBudgetMs;
+
+      previewEngineRef.current.startWave(
+        composite,
+        worldPoint,
+        tolerance,
+        (result) => {
+          setPreviewMask(result.mask);
+        },
+        (result) => {
+          setPreviewMask(result.mask);
+        },
+        timeBudget
+      );
+    },
+    [layers, tolerance, wandSettings]
+  );
+
   // Handle mouse move for preview
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
@@ -173,8 +222,8 @@ export function EditorCanvas({
       const screenX = e.clientX - rect.left;
       const screenY = e.clientY - rect.top;
 
-      // Handle panning
-      if (isPanning) {
+      // Handle panning with right-click drag
+      if (isPanning || isRightMouseDown) {
         const deltaX = screenX - lastMousePos.x;
         const deltaY = screenY - lastMousePos.y;
         setPanOffset((prev) => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
@@ -196,22 +245,11 @@ export function EditorCanvas({
       setHoverPoint(worldPoint);
 
       // Start progressive preview for magic wand
-      if (activeTool === 'magic-wand' && layers.length > 0) {
-        const composite = createComposite(layers);
-        previewEngineRef.current.startWave(
-          composite,
-          worldPoint,
-          tolerance,
-          (result) => {
-            setPreviewMask(result.mask);
-          },
-          (result) => {
-            setPreviewMask(result.mask);
-          }
-        );
+      if (activeTool === 'magic-wand') {
+        startPreview(worldPoint);
       }
     },
-    [isPanning, lastMousePos, activeTool, layers, tolerance]
+    [isPanning, isRightMouseDown, lastMousePos, activeTool, startPreview]
   );
 
   // Handle mouse down
@@ -224,8 +262,17 @@ export function EditorCanvas({
       const screenX = e.clientX - rect.left;
       const screenY = e.clientY - rect.top;
 
-      // Middle mouse button or space + click for panning
-      if (e.button === 1 || (e.button === 0 && e.altKey)) {
+      // Right mouse button for panning
+      if (e.button === 2) {
+        e.preventDefault();
+        setIsRightMouseDown(true);
+        setIsPanning(true);
+        setLastMousePos({ x: screenX, y: screenY });
+        return;
+      }
+
+      // Middle mouse button for panning
+      if (e.button === 1) {
         setIsPanning(true);
         setLastMousePos({ x: screenX, y: screenY });
         return;
@@ -253,32 +300,67 @@ export function EditorCanvas({
   );
 
   // Handle mouse up
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (e.button === 2) {
+      setIsRightMouseDown(false);
+    }
     setIsPanning(false);
   }, []);
 
   // Handle mouse leave
   const handleMouseLeave = useCallback(() => {
     setIsPanning(false);
+    setIsRightMouseDown(false);
     setHoverPoint(null);
     setPreviewMask(null);
     previewEngineRef.current.cancel();
   }, []);
 
-  // Handle wheel for zoom
+  // Handle wheel for tolerance (default) or zoom (with right-click)
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
+      
+      // Right-click held: zoom
+      if (isRightMouseDown || e.buttons === 2) {
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        const newZoom = Math.max(0.1, Math.min(10, zoom + delta));
+        onZoomChange(newZoom);
+        return;
+      }
+
+      // Default: adjust tolerance for magic wand
+      if (activeTool === 'magic-wand') {
+        const delta = e.deltaY > 0 ? -5 : 5;
+        const newTolerance = Math.max(0, Math.min(255, tolerance + delta));
+        onToleranceChange(newTolerance);
+        
+        // Re-trigger preview with new tolerance
+        if (hoverPoint && wandSettings.hoverEnabled) {
+          // Force immediate update
+          lastHoverUpdateRef.current = 0;
+          startPreview(hoverPoint);
+        }
+        return;
+      }
+
+      // Other tools: zoom
       const delta = e.deltaY > 0 ? -0.1 : 0.1;
       const newZoom = Math.max(0.1, Math.min(10, zoom + delta));
       onZoomChange(newZoom);
     },
-    [zoom, onZoomChange]
+    [zoom, tolerance, activeTool, isRightMouseDown, onZoomChange, onToleranceChange, hoverPoint, wandSettings.hoverEnabled, startPreview]
   );
+
+  // Prevent context menu
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+  }, []);
 
   // Get cursor based on tool
   const getCursor = () => {
     if (isPanning) return 'grabbing';
+    if (isRightMouseDown) return 'grab';
     switch (activeTool) {
       case 'move':
         return 'move';
@@ -304,6 +386,7 @@ export function EditorCanvas({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseLeave}
       onWheel={handleWheel}
+      onContextMenu={handleContextMenu}
     >
       {/* Checkerboard pattern background (CSS) */}
       <div className="absolute inset-0 checkerboard-bg opacity-20" />
@@ -320,12 +403,33 @@ export function EditorCanvas({
         className="absolute inset-0 pointer-events-none"
       />
 
+      {/* Wand Settings Panel */}
+      <AnimatePresence>
+        {activeTool === 'magic-wand' && (
+          <WandSettings
+            settings={wandSettings}
+            tolerance={tolerance}
+            onSettingsChange={setWandSettings}
+            onToleranceChange={onToleranceChange}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Zoom indicator */}
       <div className="absolute bottom-4 left-4 glass-morphism px-3 py-1.5 rounded-lg">
         <span className="text-sm font-medium text-foreground">
           {Math.round(zoom * 100)}%
         </span>
       </div>
+
+      {/* Tolerance indicator (when magic wand active) */}
+      {activeTool === 'magic-wand' && (
+        <div className="absolute bottom-4 left-20 glass-morphism px-3 py-1.5 rounded-lg">
+          <span className="text-sm font-medium text-foreground">
+            Tol: {tolerance}
+          </span>
+        </div>
+      )}
 
       {/* Canvas dimensions indicator */}
       <div className="absolute bottom-4 right-4 glass-morphism px-3 py-1.5 rounded-lg">
