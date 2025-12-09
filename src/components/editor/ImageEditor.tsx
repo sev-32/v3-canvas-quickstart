@@ -360,6 +360,7 @@ export function ImageEditor() {
             tolerance={tolerance}
             zoom={zoom}
             onZoomChange={setZoom}
+            onToleranceChange={setTolerance}
             onSelectionChange={handleSelectionChange}
           />
         ) : (

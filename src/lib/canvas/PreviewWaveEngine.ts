@@ -36,12 +36,15 @@ export class PreviewWaveEngine {
     this.requestCancellation = new RequestCancellation();
   }
 
+  private timeBudgetMs: number = PREVIEW_TIME_BUDGET_MS;
+
   startWave(
     imageData: ImageData,
     seedPoint: WorldPoint,
     tolerance: number,
     onProgress?: PreviewCallback,
-    onComplete?: PreviewCallback
+    onComplete?: PreviewCallback,
+    timeBudgetMs?: number
   ): number {
     // 1. Cancel any existing preview
     this.cancel();
@@ -49,8 +52,9 @@ export class PreviewWaveEngine {
     // 2. Generate request ID
     const requestId = this.requestCancellation.startPreview();
 
-    // 3. Store seed point
+    // 3. Store seed point and time budget
     this.lastSeedPoint = seedPoint;
+    this.timeBudgetMs = timeBudgetMs ?? PREVIEW_TIME_BUDGET_MS;
 
     // 4. Initialize RingBFS
     this.ringBFS = new RingBFS(imageData, seedPoint, tolerance);
@@ -82,7 +86,7 @@ export class PreviewWaveEngine {
       if (!this.ringBFS) return;
 
       // Process one ring (time-budgeted)
-      const result = this.ringBFS.processRing(PREVIEW_TIME_BUDGET_MS);
+      const result = this.ringBFS.processRing(this.timeBudgetMs);
 
       // Get current state
       const mask = this.ringBFS.getCurrentMask();
