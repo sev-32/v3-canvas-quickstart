@@ -1,17 +1,23 @@
 import { useState, useCallback, useRef } from 'react';
+import { AnimatePresence } from 'framer-motion';
 import { EditorToolbar } from './EditorToolbar';
 import { ToolPanel } from './ToolPanel';
 import { RightPanel } from './RightPanel';
+import { RightDrawerBar, type DrawerType } from './RightDrawerBar';
+import { WandSettingsDrawer } from './WandSettingsDrawer';
 import { EditorCanvas } from './EditorCanvas';
 import { EmptyState } from './EmptyState';
+import { HistoryPanel } from './HistoryPanel';
+import { LayersPanel } from './LayersPanel';
+import { PropertiesPanel } from './PropertiesPanel';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_TOLERANCE } from '@/lib/canvas/constants';
+import { DEFAULT_WAND_SETTINGS, type WandSettingsState } from '@/lib/canvas/segmentationTypes';
 import type {
   Layer,
   Selection,
   ToolType,
   BlendingMode,
   HistoryEntry,
-  EditorState,
 } from '@/lib/canvas/types';
 import { toast } from '@/hooks/use-toast';
 
@@ -57,6 +63,8 @@ export function ImageEditor() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [activeDrawer, setActiveDrawer] = useState<DrawerType>(null);
+  const [wandSettings, setWandSettings] = useState<WandSettingsState>(DEFAULT_WAND_SETTINGS);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -359,6 +367,7 @@ export function ImageEditor() {
             activeTool={activeTool}
             tolerance={tolerance}
             zoom={zoom}
+            wandSettings={wandSettings}
             onZoomChange={setZoom}
             onToleranceChange={setTolerance}
             onSelectionChange={handleSelectionChange}
@@ -367,20 +376,57 @@ export function ImageEditor() {
           <EmptyState onUpload={handleUpload} />
         )}
 
-        <RightPanel
-          layers={layers}
-          selectedLayerId={selectedLayerId}
-          history={history}
-          historyIndex={historyIndex}
-          tolerance={tolerance}
-          onSelectLayer={setSelectedLayerId}
-          onToggleVisibility={handleToggleVisibility}
-          onDeleteLayer={handleDeleteLayer}
-          onAddLayer={handleAddLayer}
-          onUpdateOpacity={handleUpdateOpacity}
-          onUpdateBlendMode={handleUpdateBlendMode}
-          onHistoryNavigate={handleHistoryNavigate}
-          onToleranceChange={setTolerance}
+        {/* Right Drawers */}
+        <AnimatePresence mode="wait">
+          {activeDrawer === 'wand-settings' && (
+            <WandSettingsDrawer
+              key="wand-settings"
+              settings={wandSettings}
+              tolerance={tolerance}
+              onSettingsChange={setWandSettings}
+              onToleranceChange={setTolerance}
+              onClose={() => setActiveDrawer(null)}
+            />
+          )}
+          {activeDrawer === 'layers' && (
+            <div key="layers" className="w-80 glass-morphism border-l border-border animate-fade-in">
+              <LayersPanel
+                layers={layers}
+                selectedLayerId={selectedLayerId}
+                onSelectLayer={setSelectedLayerId}
+                onToggleVisibility={handleToggleVisibility}
+                onDeleteLayer={handleDeleteLayer}
+                onAddLayer={handleAddLayer}
+                onUpdateOpacity={handleUpdateOpacity}
+                onUpdateBlendMode={handleUpdateBlendMode}
+              />
+            </div>
+          )}
+          {activeDrawer === 'history' && (
+            <div key="history" className="w-80 glass-morphism border-l border-border animate-fade-in">
+              <HistoryPanel
+                history={history}
+                currentIndex={historyIndex}
+                onNavigate={handleHistoryNavigate}
+              />
+            </div>
+          )}
+          {activeDrawer === 'properties' && (
+            <div key="properties" className="w-80 glass-morphism border-l border-border animate-fade-in">
+              <PropertiesPanel
+                selectedLayer={layers.find(l => l.id === selectedLayerId) || null}
+                tolerance={tolerance}
+                onToleranceChange={setTolerance}
+              />
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Right Drawer Bar */}
+        <RightDrawerBar
+          activeDrawer={activeDrawer}
+          activeTool={activeTool}
+          onDrawerSelect={setActiveDrawer}
         />
       </div>
     </div>
