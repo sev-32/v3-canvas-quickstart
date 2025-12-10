@@ -12,8 +12,7 @@ import {
 } from '@/lib/canvas/canvasRenderer';
 import { PreviewWaveEngine } from '@/lib/canvas/PreviewWaveEngine';
 import type { Layer, Selection, ToolType, WorldPoint } from '@/lib/canvas/types';
-import { WandSettings, DEFAULT_WAND_SETTINGS, type WandSettingsState } from './WandSettings';
-import { AnimatePresence } from 'framer-motion';
+import type { WandSettingsState } from '@/lib/canvas/segmentationTypes';
 
 interface EditorCanvasProps {
   layers: Layer[];
@@ -21,6 +20,7 @@ interface EditorCanvasProps {
   activeTool: ToolType;
   tolerance: number;
   zoom: number;
+  wandSettings: WandSettingsState;
   onZoomChange: (zoom: number) => void;
   onToleranceChange: (tolerance: number) => void;
   onSelectionChange: (selection: Selection | null) => void;
@@ -32,6 +32,7 @@ export function EditorCanvas({
   activeTool,
   tolerance,
   zoom,
+  wandSettings,
   onZoomChange,
   onToleranceChange,
   onSelectionChange,
@@ -48,7 +49,6 @@ export function EditorCanvas({
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [previewMask, setPreviewMask] = useState<Uint8ClampedArray | null>(null);
   const [hoverPoint, setHoverPoint] = useState<WorldPoint | null>(null);
-  const [wandSettings, setWandSettings] = useState<WandSettingsState>(DEFAULT_WAND_SETTINGS);
 
   const lastHoverUpdateRef = useRef<number>(0);
   const animationFrameRef = useRef<number | null>(null);
@@ -403,17 +403,6 @@ export function EditorCanvas({
         className="absolute inset-0 pointer-events-none"
       />
 
-      {/* Wand Settings Panel */}
-      <AnimatePresence>
-        {activeTool === 'magic-wand' && (
-          <WandSettings
-            settings={wandSettings}
-            tolerance={tolerance}
-            onSettingsChange={setWandSettings}
-            onToleranceChange={onToleranceChange}
-          />
-        )}
-      </AnimatePresence>
 
       {/* Zoom indicator */}
       <div className="absolute bottom-4 left-4 glass-morphism px-3 py-1.5 rounded-lg">
