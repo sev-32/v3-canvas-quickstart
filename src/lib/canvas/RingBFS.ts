@@ -1,9 +1,8 @@
-// V3 RingBFS - Progressive Ring-Based Flood Fill Algorithm
-// Rule 11: Progressive Preview is Mandatory
-// Rule 15: Perceptually Accurate Color Similarity
+// V3 RingBFS - Fast Progressive Ring-Based Flood Fill Algorithm
+// Optimized with array index instead of shift() and batch processing
 
 import type { WorldPoint, RGBA, Bounds } from './types';
-import { CANVAS_WIDTH, CANVAS_HEIGHT, PREVIEW_TIME_BUDGET_MS } from './constants';
+import { CANVAS_WIDTH, CANVAS_HEIGHT } from './constants';
 
 export interface RingProcessResult {
   completed: boolean;
@@ -20,27 +19,36 @@ export class RingBFS {
 
   private mask: Uint8ClampedArray;
   private visited: Uint8Array; // 0=unseen, 1=accepted, 2=rejected
-  private queue: number[]; // Current ring
-  private nextRing: number[]; // Next ring
-  private frontier: number[]; // Rejected pixels on frontier (for breathing tolerance)
+  private currentRing: Int32Array;
+  private currentRingSize: number = 0;
+  private nextRing: Int32Array;
+  private nextRingSize: number = 0;
   private ringNumber: number = 0;
   private isComplete: boolean = false;
   private seedColor: RGBA;
   private totalPixelsProcessed: number = 0;
+  private expansionRate: number = 1;
 
-  constructor(imageData: ImageData, seedPoint: WorldPoint, tolerance: number) {
+  // Bounds tracking (updated incrementally)
+  private minX: number = Infinity;
+  private minY: number = Infinity;
+  private maxX: number = -Infinity;
+  private maxY: number = -Infinity;
+
+  constructor(imageData: ImageData, seedPoint: WorldPoint, tolerance: number, expansionRate: number = 1) {
     this.imageData = imageData;
     this.seedPoint = seedPoint;
     this.tolerance = tolerance;
     this.width = imageData.width;
     this.height = imageData.height;
+    this.expansionRate = Math.max(1, expansionRate);
 
-    // Initialize arrays
-    this.mask = new Uint8ClampedArray(this.width * this.height);
-    this.visited = new Uint8Array(this.width * this.height);
-    this.queue = [];
-    this.nextRing = [];
-    this.frontier = [];
+    // Pre-allocate arrays for performance (avoid resizing)
+    const maxSize = this.width * this.height;
+    this.mask = new Uint8ClampedArray(maxSize);
+    this.visited = new Uint8Array(maxSize);
+    this.currentRing = new Int32Array(maxSize);
+    this.nextRing = new Int32Array(maxSize);
 
     // Get seed color
     const seedImageX = Math.floor(Math.max(0, Math.min(seedPoint.x, this.width - 1)));
@@ -49,67 +57,203 @@ export class RingBFS {
 
     // Initialize with seed point
     const seedIndex = seedImageY * this.width + seedImageX;
-    this.queue.push(seedIndex);
+    this.currentRing[0] = seedIndex;
+    this.currentRingSize = 1;
     this.visited[seedIndex] = 1;
     this.mask[seedIndex] = 255;
+    
+    // Update bounds
+    this.minX = this.maxX = seedImageX;
+    this.minY = this.maxY = seedImageY;
   }
 
-  processRing(timeBudgetMs: number = PREVIEW_TIME_BUDGET_MS): RingProcessResult {
+  setExpansionRate(rate: number): void {
+    this.expansionRate = Math.max(1, rate);
+  }
+
+  // Process multiple rings based on expansion rate - FAST version
+  processRing(timeBudgetMs: number = 8): RingProcessResult {
     const startTime = performance.now();
     let pixelsProcessed = 0;
+    let ringsProcessed = 0;
 
-    // Process current ring
-    while (this.queue.length > 0) {
-      // Check time budget
-      if (performance.now() - startTime >= timeBudgetMs) {
-        return { completed: false, timeUsed: performance.now() - startTime, pixelsProcessed };
+    // Process multiple rings based on expansion rate
+    while (ringsProcessed < this.expansionRate) {
+      if (this.currentRingSize === 0) {
+        this.isComplete = true;
+        return { completed: true, timeUsed: performance.now() - startTime, pixelsProcessed };
       }
 
-      const index = this.queue.shift()!;
-      const x = index % this.width;
-      const y = Math.floor(index / this.width);
+      // Check time budget (but complete at least one ring)
+      if (ringsProcessed > 0 && performance.now() - startTime >= timeBudgetMs) {
+        break;
+      }
 
-      // Check 4-connected neighbors
-      const neighbors = [
-        [x - 1, y],
-        [x + 1, y],
-        [x, y - 1],
-        [x, y + 1],
-      ];
+      // Process entire current ring at once (FAST - no shift())
+      for (let i = 0; i < this.currentRingSize; i++) {
+        const index = this.currentRing[i];
+        const x = index % this.width;
+        const y = (index / this.width) | 0; // Fast floor
 
-      for (const [nx, ny] of neighbors) {
-        if (nx < 0 || nx >= this.width || ny < 0 || ny >= this.height) continue;
-
-        const nIndex = ny * this.width + nx;
-        if (this.visited[nIndex] !== 0) continue;
-
-        pixelsProcessed++;
-        const neighborColor = this.getPixelColor(nx, ny);
-        const similarity = this.colorSimilarity(this.seedColor, neighborColor);
-
-        if (similarity <= this.tolerance) {
-          // Accept pixel
-          this.visited[nIndex] = 1;
-          this.mask[nIndex] = 255;
-          this.nextRing.push(nIndex);
-        } else {
-          // Rejected - add to frontier for potential breathing tolerance
-          this.visited[nIndex] = 2;
-          this.frontier.push(nIndex);
+        // Check 4-connected neighbors using direct calculations
+        // Up
+        if (y > 0) {
+          const nIndex = index - this.width;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x, y - 1)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+        // Down
+        if (y < this.height - 1) {
+          const nIndex = index + this.width;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x, y + 1)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+        // Left
+        if (x > 0) {
+          const nIndex = index - 1;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x - 1, y)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+        // Right
+        if (x < this.width - 1) {
+          const nIndex = index + 1;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x + 1, y)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
         }
       }
+
+      // Swap rings (fast - just swap references)
+      const temp = this.currentRing;
+      this.currentRing = this.nextRing;
+      this.nextRing = temp;
+      this.currentRingSize = this.nextRingSize;
+      this.nextRingSize = 0;
+      this.ringNumber++;
+      ringsProcessed++;
     }
 
     this.totalPixelsProcessed += pixelsProcessed;
 
-    // Move to next ring
-    if (this.nextRing.length > 0) {
-      this.queue = this.nextRing;
-      this.nextRing = [];
-      this.ringNumber++;
-      return { completed: false, timeUsed: performance.now() - startTime, pixelsProcessed };
+    if (this.currentRingSize === 0) {
+      this.isComplete = true;
+      return { completed: true, timeUsed: performance.now() - startTime, pixelsProcessed };
     }
 
+    return { completed: false, timeUsed: performance.now() - startTime, pixelsProcessed };
+  }
+
+  // Inline check and add for performance
+  private checkAndAddPixel(index: number, x: number, y: number): boolean {
+    const dataIndex = index * 4;
+    const data = this.imageData.data;
+    
+    // Fast inline color similarity
+    const rDiff = this.seedColor.r - data[dataIndex];
+    const gDiff = this.seedColor.g - data[dataIndex + 1];
+    const bDiff = this.seedColor.b - data[dataIndex + 2];
+    const aDiff = this.seedColor.a - data[dataIndex + 3];
+    
+    const similarity = Math.sqrt(
+      0.3 * rDiff * rDiff + 
+      0.59 * gDiff * gDiff + 
+      0.11 * bDiff * bDiff + 
+      aDiff * aDiff
+    );
+
+    if (similarity <= this.tolerance) {
+      this.visited[index] = 1;
+      this.mask[index] = 255;
+      // Update bounds incrementally
+      if (x < this.minX) this.minX = x;
+      if (x > this.maxX) this.maxX = x;
+      if (y < this.minY) this.minY = y;
+      if (y > this.maxY) this.maxY = y;
+      return true;
+    } else {
+      this.visited[index] = 2;
+      return false;
+    }
+  }
+
+  // INSTANT fill - complete everything in one call
+  processInstant(): RingProcessResult {
+    const startTime = performance.now();
+    let pixelsProcessed = 0;
+
+    while (this.currentRingSize > 0) {
+      for (let i = 0; i < this.currentRingSize; i++) {
+        const index = this.currentRing[i];
+        const x = index % this.width;
+        const y = (index / this.width) | 0;
+
+        // Up
+        if (y > 0) {
+          const nIndex = index - this.width;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x, y - 1)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+        // Down
+        if (y < this.height - 1) {
+          const nIndex = index + this.width;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x, y + 1)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+        // Left
+        if (x > 0) {
+          const nIndex = index - 1;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x - 1, y)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+        // Right
+        if (x < this.width - 1) {
+          const nIndex = index + 1;
+          if (this.visited[nIndex] === 0) {
+            pixelsProcessed++;
+            if (this.checkAndAddPixel(nIndex, x + 1, y)) {
+              this.nextRing[this.nextRingSize++] = nIndex;
+            }
+          }
+        }
+      }
+
+      // Swap rings
+      const temp = this.currentRing;
+      this.currentRing = this.nextRing;
+      this.nextRing = temp;
+      this.currentRingSize = this.nextRingSize;
+      this.nextRingSize = 0;
+      this.ringNumber++;
+    }
+
+    this.totalPixelsProcessed += pixelsProcessed;
     this.isComplete = true;
     return { completed: true, timeUsed: performance.now() - startTime, pixelsProcessed };
   }
@@ -119,35 +263,17 @@ export class RingBFS {
   }
 
   getCurrentBounds(): Bounds {
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-
-    for (let y = 0; y < this.height; y++) {
-      for (let x = 0; x < this.width; x++) {
-        const index = y * this.width + x;
-        if (this.mask[index] > 0) {
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-        }
-      }
-    }
-
-    if (minX === Infinity) {
-      // No pixels selected, return seed point bounds
+    if (this.minX === Infinity) {
       const seedX = Math.floor(this.seedPoint.x);
       const seedY = Math.floor(this.seedPoint.y);
       return { x: seedX, y: seedY, width: 1, height: 1 };
     }
 
     return {
-      x: minX,
-      y: minY,
-      width: maxX - minX + 1,
-      height: maxY - minY + 1,
+      x: this.minX,
+      y: this.minY,
+      width: this.maxX - this.minX + 1,
+      height: this.maxY - this.minY + 1,
     };
   }
 
@@ -163,37 +289,8 @@ export class RingBFS {
     return this.isComplete;
   }
 
-  // Rule 16: Breathing Tolerance (Optional but Recommended)
   updateTolerance(newTolerance: number): void {
-    if (newTolerance <= this.tolerance) {
-      // Tolerance decreased - need to re-evaluate
-      this.tolerance = newTolerance;
-      return;
-    }
-
     this.tolerance = newTolerance;
-
-    // Re-test frontier pixels
-    const newlyAccepted: number[] = [];
-    for (const index of this.frontier) {
-      const x = index % this.width;
-      const y = Math.floor(index / this.width);
-      const color = this.getPixelColor(x, y);
-      const similarity = this.colorSimilarity(this.seedColor, color);
-
-      if (similarity <= newTolerance) {
-        this.visited[index] = 1;
-        this.mask[index] = 255;
-        newlyAccepted.push(index);
-      }
-    }
-
-    // Add newly accepted to queue for further expansion
-    if (newlyAccepted.length > 0) {
-      this.queue.push(...newlyAccepted);
-      this.frontier = this.frontier.filter((idx) => !newlyAccepted.includes(idx));
-      this.isComplete = false;
-    }
   }
 
   private getPixelColor(x: number, y: number): RGBA {
@@ -204,18 +301,5 @@ export class RingBFS {
       b: this.imageData.data[index + 2],
       a: this.imageData.data[index + 3],
     };
-  }
-
-  // Rule 15: Perceptually Accurate Color Similarity
-  private colorSimilarity(c1: RGBA, c2: RGBA): number {
-    const rDiff = c1.r - c2.r;
-    const gDiff = c1.g - c2.g;
-    const bDiff = c1.b - c2.b;
-    const aDiff = c1.a - c2.a;
-
-    // Weighted by human eye sensitivity
-    return Math.sqrt(
-      0.3 * rDiff * rDiff + 0.59 * gDiff * gDiff + 0.11 * bDiff * bDiff + aDiff * aDiff
-    );
   }
 }

@@ -191,11 +191,9 @@ export function EditorCanvas({
 
       const composite = createComposite(layers);
       
-      // For instant mode, use a very large time budget
-      const timeBudget = wandSettings.fillSpeed === 'instant' 
-        ? 10000 // 10 seconds - effectively instant
-        : wandSettings.timeBudgetMs;
-
+      // Build options from wand settings
+      const isInstant = wandSettings.fillSpeed === 'instant';
+      
       previewEngineRef.current.startWave(
         composite,
         worldPoint,
@@ -206,7 +204,11 @@ export function EditorCanvas({
         (result) => {
           setPreviewMask(result.mask);
         },
-        timeBudget
+        {
+          timeBudgetMs: wandSettings.timeBudgetMs,
+          expansionRate: wandSettings.expansionRate,
+          instantMode: isInstant,
+        }
       );
     },
     [layers, tolerance, wandSettings]
