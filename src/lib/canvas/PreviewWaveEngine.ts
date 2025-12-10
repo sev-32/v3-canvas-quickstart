@@ -1,11 +1,9 @@
-// V3 Preview Wave Engine - Progressive Segmentation Preview
-// Rule 11: Progressive Preview is Mandatory
-// Rule 12: Zero-Latency Seed Highlight
-// Rule 13: Request Cancellation is Required
+// V3 Preview Wave Engine - Fast Progressive Segmentation Preview
+// Optimized for speed with expansion rate support
 
 import { RingBFS } from './RingBFS';
-import type { WorldPoint, PreviewCallback, PreviewResult } from './types';
-import { CANVAS_WIDTH, CANVAS_HEIGHT, PREVIEW_TIME_BUDGET_MS } from './constants';
+import type { WorldPoint, PreviewCallback } from './types';
+import { PREVIEW_TIME_BUDGET_MS } from './constants';
 
 class RequestCancellation {
   private currentRequestId: number = 0;
@@ -26,17 +24,22 @@ class RequestCancellation {
   }
 }
 
+export interface WaveEngineOptions {
+  timeBudgetMs?: number;
+  expansionRate?: number;
+  instantMode?: boolean;
+}
+
 export class PreviewWaveEngine {
   private ringBFS: RingBFS | null = null;
   private requestCancellation: RequestCancellation;
   private animationFrameId: number | null = null;
   private lastSeedPoint: WorldPoint | null = null;
+  private options: WaveEngineOptions = {};
 
   constructor() {
     this.requestCancellation = new RequestCancellation();
   }
-
-  private timeBudgetMs: number = PREVIEW_TIME_BUDGET_MS;
 
   startWave(
     imageData: ImageData,
@@ -44,7 +47,7 @@ export class PreviewWaveEngine {
     tolerance: number,
     onProgress?: PreviewCallback,
     onComplete?: PreviewCallback,
-    timeBudgetMs?: number
+    options?: WaveEngineOptions
   ): number {
     // 1. Cancel any existing preview
     this.cancel();
@@ -52,28 +55,50 @@ export class PreviewWaveEngine {
     // 2. Generate request ID
     const requestId = this.requestCancellation.startPreview();
 
-    // 3. Store seed point and time budget
+    // 3. Store options
     this.lastSeedPoint = seedPoint;
-    this.timeBudgetMs = timeBudgetMs ?? PREVIEW_TIME_BUDGET_MS;
+    this.options = options || {};
 
-    // 4. Initialize RingBFS
-    this.ringBFS = new RingBFS(imageData, seedPoint, tolerance);
+    const timeBudgetMs = this.options.timeBudgetMs ?? PREVIEW_TIME_BUDGET_MS;
+    const expansionRate = this.options.expansionRate ?? 1;
+    const instantMode = this.options.instantMode ?? false;
 
-    // 5. Provide immediate feedback with seed point
+    // 4. Initialize RingBFS with expansion rate
+    this.ringBFS = new RingBFS(imageData, seedPoint, tolerance, expansionRate);
+
+    // 5. Handle instant mode - complete immediately
+    if (instantMode || timeBudgetMs >= 1000) {
+      const result = this.ringBFS.processInstant();
+      const mask = this.ringBFS.getCurrentMask();
+      const bounds = this.ringBFS.getCurrentBounds();
+      
+      if (onProgress) {
+        onProgress({ mask, bounds, complete: true });
+      }
+      if (onComplete) {
+        onComplete({ mask, bounds, complete: true });
+      }
+      
+      this.ringBFS = null;
+      return requestId;
+    }
+
+    // 6. Provide immediate feedback with seed point
     const initialMask = this.ringBFS.getCurrentMask();
     const initialBounds = this.ringBFS.getCurrentBounds();
     if (onProgress) {
       onProgress({ mask: initialMask, bounds: initialBounds, complete: false });
     }
 
-    // 6. Start progressive expansion
-    this.scheduleFrame(requestId, onProgress, onComplete);
+    // 7. Start progressive expansion
+    this.scheduleFrame(requestId, timeBudgetMs, onProgress, onComplete);
 
     return requestId;
   }
 
   private scheduleFrame(
     requestId: number,
+    timeBudgetMs: number,
     onProgress?: PreviewCallback,
     onComplete?: PreviewCallback
   ): void {
@@ -85,31 +110,29 @@ export class PreviewWaveEngine {
 
       if (!this.ringBFS) return;
 
-      // Process one ring (time-budgeted)
-      const result = this.ringBFS.processRing(this.timeBudgetMs);
+      // Process ring(s) with time budget
+      const result = this.ringBFS.processRing(timeBudgetMs);
 
       // Get current state
       const mask = this.ringBFS.getCurrentMask();
       const bounds = this.ringBFS.getCurrentBounds();
 
-      if (mask && bounds) {
-        // Notify progress
-        if (onProgress) {
-          onProgress({ mask, bounds, complete: result.completed });
-        }
+      // Notify progress
+      if (onProgress) {
+        onProgress({ mask, bounds, complete: result.completed });
+      }
 
-        if (result.completed) {
-          // Notify complete
-          if (onComplete) {
-            onComplete({ mask, bounds, complete: true });
-          }
-          this.ringBFS = null;
-          return;
+      if (result.completed) {
+        // Notify complete
+        if (onComplete) {
+          onComplete({ mask, bounds, complete: true });
         }
+        this.ringBFS = null;
+        return;
       }
 
       // Schedule next frame
-      this.scheduleFrame(requestId, onProgress, onComplete);
+      this.scheduleFrame(requestId, timeBudgetMs, onProgress, onComplete);
     });
   }
 
