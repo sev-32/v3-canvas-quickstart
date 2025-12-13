@@ -10,7 +10,8 @@ import {
   createComposite,
   setupHighDPICanvas,
 } from '@/lib/canvas/canvasRenderer';
-import { PreviewWaveEngine } from '@/lib/canvas/PreviewWaveEngine';
+import { PreviewWaveEngine, type WaveEngineStats } from '@/lib/canvas/PreviewWaveEngine';
+import { PerformanceOverlay, type PerformanceStats } from './PerformanceOverlay';
 import type { Layer, Selection, ToolType, WorldPoint } from '@/lib/canvas/types';
 import type { WandSettingsState } from '@/lib/canvas/segmentationTypes';
 
@@ -49,10 +50,51 @@ export function EditorCanvas({
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [previewMask, setPreviewMask] = useState<Uint8ClampedArray | null>(null);
   const [hoverPoint, setHoverPoint] = useState<WorldPoint | null>(null);
+  
+  // Performance stats
+  const [perfStats, setPerfStats] = useState<PerformanceStats>({
+    ringCount: 0,
+    pixelsProcessed: 0,
+    frameTime: 0,
+    pixelsPerSecond: 0,
+    isActive: false,
+    isComplete: false,
+    engine: wandSettings.engine,
+  });
+  const lastStatsUpdateRef = useRef<number>(0);
+  const pixelsAtLastUpdateRef = useRef<number>(0);
 
   const lastHoverUpdateRef = useRef<number>(0);
   const animationFrameRef = useRef<number | null>(null);
   const marchingAntsOffsetRef = useRef(0);
+  
+  // Set up stats callback
+  useEffect(() => {
+    previewEngineRef.current.setStatsCallback((stats: WaveEngineStats) => {
+      const now = performance.now();
+      const timeSinceLastUpdate = now - lastStatsUpdateRef.current;
+      
+      let pixelsPerSecond = 0;
+      if (timeSinceLastUpdate > 0 && stats.pixelsProcessed > pixelsAtLastUpdateRef.current) {
+        const pixelsDelta = stats.pixelsProcessed - pixelsAtLastUpdateRef.current;
+        pixelsPerSecond = (pixelsDelta / timeSinceLastUpdate) * 1000;
+      }
+      
+      lastStatsUpdateRef.current = now;
+      pixelsAtLastUpdateRef.current = stats.pixelsProcessed;
+      
+      setPerfStats(prev => ({
+        ...prev,
+        ringCount: stats.ringCount,
+        pixelsProcessed: stats.pixelsProcessed,
+        frameTime: stats.frameTime,
+        pixelsPerSecond: pixelsPerSecond > 0 ? pixelsPerSecond : prev.pixelsPerSecond,
+        isActive: true,
+        isComplete: false,
+        engine: wandSettings.engine,
+      }));
+    });
+  }, [wandSettings.engine]);
 
   // Update coordinate system when viewport or zoom changes
   useEffect(() => {
@@ -188,6 +230,8 @@ export function EditorCanvas({
         return;
       }
       lastHoverUpdateRef.current = now;
+      lastStatsUpdateRef.current = now;
+      pixelsAtLastUpdateRef.current = 0;
 
       const composite = createComposite(layers);
       
@@ -200,14 +244,19 @@ export function EditorCanvas({
         tolerance,
         (result) => {
           setPreviewMask(result.mask);
+          if (result.complete) {
+            setPerfStats(prev => ({ ...prev, isActive: false, isComplete: true }));
+          }
         },
         (result) => {
           setPreviewMask(result.mask);
+          setPerfStats(prev => ({ ...prev, isActive: false, isComplete: true }));
         },
         {
           timeBudgetMs: wandSettings.timeBudgetMs,
           expansionRate: wandSettings.expansionRate,
           instantMode: isInstant,
+          engine: wandSettings.engine,
         }
       );
     },
@@ -405,6 +454,11 @@ export function EditorCanvas({
         className="absolute inset-0 pointer-events-none"
       />
 
+      {/* Performance Overlay */}
+      <PerformanceOverlay 
+        stats={perfStats} 
+        visible={activeTool === 'magic-wand' && wandSettings.debugMode} 
+      />
 
       {/* Zoom indicator */}
       <div className="absolute bottom-4 left-4 glass-morphism px-3 py-1.5 rounded-lg">

@@ -1,8 +1,9 @@
-// V3 Preview Wave Engine - Fast Progressive Segmentation Preview
-// Optimized for speed with expansion rate support
+// V3 Preview Wave Engine - Unified Multi-Engine Progressive Segmentation
+// Supports multiple algorithms: RingBFS, Scanline, StackBFS, QueueBFS
 
-import { RingBFS } from './RingBFS';
+import { createSegmentationEngine, type SegmentationEngineInterface } from './engines/SegmentationEngineFactory';
 import type { WorldPoint, PreviewCallback } from './types';
+import type { SegmentationEngine } from './segmentationTypes';
 import { PREVIEW_TIME_BUDGET_MS } from './constants';
 
 class RequestCancellation {
@@ -28,17 +29,32 @@ export interface WaveEngineOptions {
   timeBudgetMs?: number;
   expansionRate?: number;
   instantMode?: boolean;
+  engine?: SegmentationEngine;
 }
 
+export interface WaveEngineStats {
+  ringCount: number;
+  pixelsProcessed: number;
+  frameTime: number;
+}
+
+export type StatsCallback = (stats: WaveEngineStats) => void;
+
 export class PreviewWaveEngine {
-  private ringBFS: RingBFS | null = null;
+  private engine: SegmentationEngineInterface | null = null;
   private requestCancellation: RequestCancellation;
   private animationFrameId: number | null = null;
   private lastSeedPoint: WorldPoint | null = null;
   private options: WaveEngineOptions = {};
+  private currentEngineType: SegmentationEngine = 'ringBFS';
+  private statsCallback: StatsCallback | null = null;
 
   constructor() {
     this.requestCancellation = new RequestCancellation();
+  }
+
+  setStatsCallback(callback: StatsCallback | null): void {
+    this.statsCallback = callback;
   }
 
   startWave(
@@ -62,15 +78,33 @@ export class PreviewWaveEngine {
     const timeBudgetMs = this.options.timeBudgetMs ?? PREVIEW_TIME_BUDGET_MS;
     const expansionRate = this.options.expansionRate ?? 1;
     const instantMode = this.options.instantMode ?? false;
+    const engineType = this.options.engine ?? 'ringBFS';
 
-    // 4. Initialize RingBFS with expansion rate
-    this.ringBFS = new RingBFS(imageData, seedPoint, tolerance, expansionRate);
+    this.currentEngineType = engineType;
+
+    // 4. Create the appropriate engine
+    this.engine = createSegmentationEngine(
+      engineType,
+      imageData,
+      seedPoint,
+      tolerance,
+      expansionRate
+    );
 
     // 5. Handle instant mode - complete immediately
     if (instantMode || timeBudgetMs >= 1000) {
-      const result = this.ringBFS.processInstant();
-      const mask = this.ringBFS.getCurrentMask();
-      const bounds = this.ringBFS.getCurrentBounds();
+      const result = this.engine.processInstant();
+      const mask = this.engine.getCurrentMask();
+      const bounds = this.engine.getCurrentBounds();
+      
+      // Report stats
+      if (this.statsCallback) {
+        this.statsCallback({
+          ringCount: this.engine.getIterationCount(),
+          pixelsProcessed: this.engine.getTotalPixelsProcessed(),
+          frameTime: result.timeUsed,
+        });
+      }
       
       if (onProgress) {
         onProgress({ mask, bounds, complete: true });
@@ -79,13 +113,13 @@ export class PreviewWaveEngine {
         onComplete({ mask, bounds, complete: true });
       }
       
-      this.ringBFS = null;
+      this.engine = null;
       return requestId;
     }
 
     // 6. Provide immediate feedback with seed point
-    const initialMask = this.ringBFS.getCurrentMask();
-    const initialBounds = this.ringBFS.getCurrentBounds();
+    const initialMask = this.engine.getCurrentMask();
+    const initialBounds = this.engine.getCurrentBounds();
     if (onProgress) {
       onProgress({ mask: initialMask, bounds: initialBounds, complete: false });
     }
@@ -108,14 +142,23 @@ export class PreviewWaveEngine {
         return; // Cancelled
       }
 
-      if (!this.ringBFS) return;
+      if (!this.engine) return;
 
-      // Process ring(s) with time budget
-      const result = this.ringBFS.processRing(timeBudgetMs);
+      // Process frame with time budget
+      const result = this.engine.processFrame(timeBudgetMs);
 
       // Get current state
-      const mask = this.ringBFS.getCurrentMask();
-      const bounds = this.ringBFS.getCurrentBounds();
+      const mask = this.engine.getCurrentMask();
+      const bounds = this.engine.getCurrentBounds();
+
+      // Report stats
+      if (this.statsCallback) {
+        this.statsCallback({
+          ringCount: this.engine.getIterationCount(),
+          pixelsProcessed: this.engine.getTotalPixelsProcessed(),
+          frameTime: result.timeUsed,
+        });
+      }
 
       // Notify progress
       if (onProgress) {
@@ -127,7 +170,7 @@ export class PreviewWaveEngine {
         if (onComplete) {
           onComplete({ mask, bounds, complete: true });
         }
-        this.ringBFS = null;
+        this.engine = null;
         return;
       }
 
@@ -142,29 +185,33 @@ export class PreviewWaveEngine {
       this.animationFrameId = null;
     }
     this.requestCancellation.cancelAll();
-    this.ringBFS = null;
+    this.engine = null;
     this.lastSeedPoint = null;
   }
 
   updateTolerance(newTolerance: number): void {
-    if (this.ringBFS) {
-      this.ringBFS.updateTolerance(newTolerance);
+    if (this.engine) {
+      this.engine.updateTolerance(newTolerance);
     }
   }
 
   isActive(): boolean {
-    return this.ringBFS !== null;
+    return this.engine !== null;
   }
 
   getLastSeedPoint(): WorldPoint | null {
     return this.lastSeedPoint;
   }
 
+  getCurrentEngineType(): SegmentationEngine {
+    return this.currentEngineType;
+  }
+
   getCurrentProgress(): { ringNumber: number; pixelsProcessed: number } | null {
-    if (!this.ringBFS) return null;
+    if (!this.engine) return null;
     return {
-      ringNumber: this.ringBFS.getRingNumber(),
-      pixelsProcessed: this.ringBFS.getTotalPixelsProcessed(),
+      ringNumber: this.engine.getIterationCount(),
+      pixelsProcessed: this.engine.getTotalPixelsProcessed(),
     };
   }
 }
