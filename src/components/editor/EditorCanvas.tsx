@@ -5,13 +5,13 @@ import {
   drawCheckerboard,
   drawLayer,
   drawSelection,
-  drawPreviewMask,
   drawSeedHighlight,
   createComposite,
   setupHighDPICanvas,
 } from '@/lib/canvas/canvasRenderer';
 import { PreviewWaveEngine, type WaveEngineStats } from '@/lib/canvas/PreviewWaveEngine';
-import { PerformanceOverlay, type PerformanceStats } from './PerformanceOverlay';
+import { PerformanceOverlay, DEFAULT_PERFORMANCE_STATS, type PerformanceStats } from './PerformanceOverlay';
+import { MorphingMaskRenderer } from '@/lib/canvas/rendering/MorphingMaskRenderer';
 import type { Layer, Selection, ToolType, WorldPoint } from '@/lib/canvas/types';
 import type { WandSettingsState } from '@/lib/canvas/segmentationTypes';
 
@@ -43,6 +43,7 @@ export function EditorCanvas({
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const coordSystemRef = useRef<CoordinateSystem>(new CoordinateSystem());
   const previewEngineRef = useRef<PreviewWaveEngine>(new PreviewWaveEngine());
+  const morphRendererRef = useRef<MorphingMaskRenderer>(new MorphingMaskRenderer());
 
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -51,22 +52,29 @@ export function EditorCanvas({
   const [previewMask, setPreviewMask] = useState<Uint8ClampedArray | null>(null);
   const [hoverPoint, setHoverPoint] = useState<WorldPoint | null>(null);
   
-  // Performance stats
-  const [perfStats, setPerfStats] = useState<PerformanceStats>({
-    ringCount: 0,
-    pixelsProcessed: 0,
-    frameTime: 0,
-    pixelsPerSecond: 0,
-    isActive: false,
-    isComplete: false,
-    engine: wandSettings.engine,
-  });
+  // Performance stats - using new comprehensive interface
+  const [perfStats, setPerfStats] = useState<PerformanceStats>(DEFAULT_PERFORMANCE_STATS);
   const lastStatsUpdateRef = useRef<number>(0);
   const pixelsAtLastUpdateRef = useRef<number>(0);
+  const drawTimeRef = useRef<number>(0);
 
   const lastHoverUpdateRef = useRef<number>(0);
   const animationFrameRef = useRef<number | null>(null);
   const marchingAntsOffsetRef = useRef(0);
+  
+  // Set up morphing renderer update callback
+  useEffect(() => {
+    morphRendererRef.current.setUpdateCallback((mask) => {
+      setPreviewMask(mask);
+    });
+    
+    // Configure morph settings based on wand settings
+    morphRendererRef.current.setConfig({
+      duration: 120, // Fast smooth transition
+      easing: 'easeOut',
+      blendMode: 'crossfade',
+    });
+  }, []);
   
   // Set up stats callback
   useEffect(() => {
@@ -87,10 +95,12 @@ export function EditorCanvas({
         ...prev,
         ringCount: stats.ringCount,
         pixelsProcessed: stats.pixelsProcessed,
-        frameTime: stats.frameTime,
+        segmentationTime: stats.frameTime,
         pixelsPerSecond: pixelsPerSecond > 0 ? pixelsPerSecond : prev.pixelsPerSecond,
+        totalFrameTime: stats.frameTime + drawTimeRef.current,
         isActive: true,
         isComplete: false,
+        isMorphing: morphRendererRef.current.isAnimating(),
         engine: wandSettings.engine,
       }));
     });
@@ -167,7 +177,7 @@ export function EditorCanvas({
     };
   }, [layers, selection]);
 
-  // Preview render loop
+  // Preview render loop with morphing support
   useEffect(() => {
     const previewCanvas = previewCanvasRef.current;
     const container = containerRef.current;
@@ -175,8 +185,11 @@ export function EditorCanvas({
 
     const rect = container.getBoundingClientRect();
     const ctx = setupHighDPICanvas(previewCanvas, rect.width, rect.height);
+    let frameId: number;
 
     const render = () => {
+      const drawStart = performance.now();
+      
       // Clear
       ctx.clearRect(0, 0, rect.width, rect.height);
 
@@ -184,20 +197,35 @@ export function EditorCanvas({
       ctx.save();
       coordSystemRef.current.applyToContext(ctx);
 
-      // Draw magic wand preview
+      // Draw magic wand preview with morphing
       if (previewMask && hoverPoint && activeTool === 'magic-wand' && wandSettings.hoverEnabled) {
         ctx.globalAlpha = wandSettings.previewOpacity;
-        drawPreviewMask(ctx, previewMask);
+        
+        // Use morphing renderer for smooth transitions
+        morphRendererRef.current.renderToContext(ctx);
+        
         ctx.globalAlpha = 1;
         drawSeedHighlight(ctx, hoverPoint);
       }
 
       ctx.restore();
 
-      requestAnimationFrame(render);
+      // Track draw time
+      const drawTime = performance.now() - drawStart;
+      drawTimeRef.current = drawTime;
+      
+      // Update draw time in stats
+      setPerfStats(prev => ({
+        ...prev,
+        drawTime,
+        morphTime: morphRendererRef.current.isAnimating() ? morphRendererRef.current.getProgress() * 5 : 0,
+        isMorphing: morphRendererRef.current.isAnimating(),
+      }));
+
+      frameId = requestAnimationFrame(render);
     };
 
-    const frameId = requestAnimationFrame(render);
+    frameId = requestAnimationFrame(render);
 
     return () => cancelAnimationFrame(frameId);
   }, [previewMask, hoverPoint, activeTool, wandSettings.hoverEnabled, wandSettings.previewOpacity]);
@@ -243,13 +271,14 @@ export function EditorCanvas({
         worldPoint,
         tolerance,
         (result) => {
-          setPreviewMask(result.mask);
+          // Use morphing renderer for smooth transitions between masks
+          morphRendererRef.current.morphTo(result.mask);
           if (result.complete) {
             setPerfStats(prev => ({ ...prev, isActive: false, isComplete: true }));
           }
         },
         (result) => {
-          setPreviewMask(result.mask);
+          morphRendererRef.current.morphTo(result.mask);
           setPerfStats(prev => ({ ...prev, isActive: false, isComplete: true }));
         },
         {
@@ -287,13 +316,14 @@ export function EditorCanvas({
 
       // Validate bounds
       if (!coordSystemRef.current.isInBounds(worldPoint)) {
-        setHoverPoint(null);
-        setPreviewMask(null);
-        previewEngineRef.current.cancel();
-        return;
-      }
+      setHoverPoint(null);
+      setPreviewMask(null);
+      morphRendererRef.current.clear();
+      previewEngineRef.current.cancel();
+      return;
+    }
 
-      setHoverPoint(worldPoint);
+    setHoverPoint(worldPoint);
 
       // Start progressive preview for magic wand
       if (activeTool === 'magic-wand') {
@@ -364,6 +394,7 @@ export function EditorCanvas({
     setIsRightMouseDown(false);
     setHoverPoint(null);
     setPreviewMask(null);
+    morphRendererRef.current.clear();
     previewEngineRef.current.cancel();
   }, []);
 
