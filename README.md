@@ -1,73 +1,53 @@
-# Welcome to your Lovable project
+# V3 CANVAS · IMAGE EDITOR
 
-## Project info
+### Selection is a data structure, not a moving outline.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+**Visual authoring · reproducible masks · editable canvas state**
 
-## How can I edit this code?
+Image editing becomes difficult to verify when tools only change the displayed pixels. A serious editor should preserve the selected region, its tolerances, the layer it belongs to and the operation that produced it.
 
-There are several ways of editing your application.
+**V3 CANVAS · IMAGE EDITOR** is an experimental source project investigating this workflow. A layered browser image-editor research app with a magic-wand tool, segmentation options, selection and layer state, undo/redo history, properties inspector and a performance overlay. The checked-in source uses canvas editing rather than a finished production imaging SDK.
 
-**Use Lovable**
+> **Implementation boundary:** the components are present in the Git repository. The application was **not newly built or rendered** during this documentation pass. Feature presence, a working UI and independently measured selection quality are three different evidence levels.
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+**Source:** [ImageEditor.tsx](src/components/editor/ImageEditor.tsx) · [EditorCanvas.tsx](src/components/editor/EditorCanvas.tsx) · [WandSettingsDrawer.tsx](src/components/editor/WandSettingsDrawer.tsx) · [PerformanceOverlay.tsx](src/components/editor/PerformanceOverlay.tsx)
 
-Changes made via Lovable will be committed automatically to this repo.
+---
 
-**Use your preferred IDE**
+## What this repository contains
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+```mermaid
+flowchart LR
+  IMAGE["Source image"] --> CANVAS["Editor canvas"]
+  TOOLS["Selection/brush controls"] --> CANVAS
+  CANVAS --> MASK["Selection + layer state"]
+  MASK --> OUTPUT["Visual preview and export"]
+  MASK --> HISTORY["Edit/history operations"]
+```
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+| Responsibility | Current source direction |
+|---|---|
+| **Canvas** | Browser image pixels, pointer input and editor transforms |
+| **Selections** | Magic-wand and/or lasso interactions with explicit parameter controls |
+| **Layers** | Independent compositing and visibility state |
+| **History** | Undo/replay metadata where implemented by the editor |
+| **Visualization** | Editor panels and user feedback, not an independent accuracy certificate |
 
-Follow these steps:
+## Start from source
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+This is a Vite-based React app; use the local URL printed by the server. A successful bundler run is not evidence that every editing gesture or integration works.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Qualification work
 
-**Use GitHub Codespaces**
+The tool should be checked against labeled reference masks, alpha boundaries, contiguous and noncontiguous selections, image sizes, and history replay. A fast visual interaction does not establish mathematically exact region segmentation.
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+**The goal is an editor whose operations can be inspected and reversed, not merely a UI whose effects seem plausible.**
 
-## What technologies are used for this project?
+---
 
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+*The boilerplate README has been replaced with source-specific documentation. No editor source files were changed.*
